@@ -440,3 +440,34 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
+
+int
+pgtblprint(pagetable_t pagetable, int depth){
+  // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if(pte & PTE_V){  // 如果页表项有效
+      //按格式打印页表项
+      printf("..");
+      for(int j = 0; j < depth; j++){
+        printf(" ..");
+      }
+      printf("%d: pte %p pa %p\n", i, pte, PTE2PA(pte));
+    
+      //如果还有下一级页表项，递归打印
+      if((pte & (PTE_R|PTE_W|PTE_X)) == 0){
+        // this PTE points to a lower-level page table.
+        uint64 child = PTE2PA(pte);
+        pgtblprint((pagetable_t)child, depth+1);
+      } 
+    }
+  }
+  return 0;
+}
+
+int
+vmprint(pagetable_t pagetable){
+  printf("page table %p\n", pagetable);
+  pgtblprint(pagetable, 0);
+  return 0;
+}
