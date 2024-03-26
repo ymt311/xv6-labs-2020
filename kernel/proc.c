@@ -22,6 +22,8 @@ static void freeproc(struct proc *p);
 extern char trampoline[]; // trampoline.S
 
 // initialize the proc table at boot time.
+// 修改过后的procinit不需要为所有进程创建不同的内核栈
+// 创建进程时再创建每个进程的内核栈，将其map到每个进程各自的内核页表上
 void
 procinit(void)
 {
@@ -31,6 +33,7 @@ procinit(void)
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
 
+      /*
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
@@ -40,6 +43,7 @@ procinit(void)
       uint64 va = KSTACK((int) (p - proc));
       kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
       p->kstack = va;
+      */
   }
   kvminithart();
 }
@@ -121,6 +125,16 @@ found:
     return 0;
   }
 
+  // 为进程创建自己的内核页表
+  p->kernelpgtbl = kvminit_newpgtbl();
+  // 创建进程内核栈
+  char *pa = kalloc();
+  if(pa == 0)
+    panic("kalloc");
+  uint64 va = KSTACK((int)0);  // 将内核栈映射到固定的逻辑地址上
+  kvmmap(p->kernelpgtbl, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;
+  
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -149,6 +163,15 @@ freeproc(struct proc *p)
   p->chan = 0;
   p->killed = 0;
   p->xstate = 0;
+  p->state = UNUSED;
+
+  // 释放进程的内核栈
+  void *kstack_pa = (void *)kvmpa(p->kernelpgtbl, p->kstack);
+  kfree(kstack_pa);
+  p->kstack = 0;
+  // 递归释放进程独享的页表，释放页表本身所占用的空间，但不释放叶子页表指向的物理页
+  kvm_free_kernelpgtbl(p->kernelpgtbl);
+  p->kernelpgtbl = 0;
   p->state = UNUSED;
 }
 
@@ -473,7 +496,16 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        // 在调度器将 CPU 交给进程执行之前，切换到该进程对应的内核页表
+        w_satp(MAKE_SATP(p->kernelpgtbl));
+        sfence_vma();  // 清除快表缓存
+
+        // 调度，执行进程
         swtch(&c->context, &p->context);
+
+        // 切换回全局内核页表
+        kvminithart();
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
