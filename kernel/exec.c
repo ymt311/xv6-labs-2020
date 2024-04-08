@@ -40,17 +40,20 @@ exec(char *path, char **argv)
 
   // Load program into memory.
   for(i=0, off=elf.phoff; i<elf.phnum; i++, off+=sizeof(ph)){
-    if(readi(ip, 0, (uint64)&ph, off, sizeof(ph)) != sizeof(ph))
+    if(readi(ip, 0, (uint64)&ph, off, sizeof(ph)) != sizeof(ph)) // 通过 readi 函数从磁盘 inode（ip）中读取 Program Header
       goto bad;
     if(ph.type != ELF_PROG_LOAD)
       continue;
-    if(ph.memsz < ph.filesz)
+    if(ph.memsz < ph.filesz) // 内存中的空间不足以容纳整个段
       goto bad;
-    if(ph.vaddr + ph.memsz < ph.vaddr)
+    if(ph.vaddr + ph.memsz < ph.vaddr) // 确保加载的段在内存中的地址范围合法，即 ph.vaddr + ph.memsz 不会溢出
       goto bad;
     uint64 sz1;
-    if((sz1 = uvmalloc(pagetable, sz, ph.vaddr + ph.memsz)) == 0)
+    if((sz1 = uvmalloc(pagetable, sz, ph.vaddr + ph.memsz)) == 0) // 调用 uvmalloc 分配内存空间给段，并返回新的可用内存空间的地址
       goto bad;
+    if(sz1 >= PLIC){ // 添加检测，防止程序大小超过 PLIC
+      goto bad;
+    }
     sz = sz1;
     if(ph.vaddr % PGSIZE != 0)
       goto bad;
@@ -107,6 +110,10 @@ exec(char *path, char **argv)
     if(*s == '/')
       last = s+1;
   safestrcpy(p->name, last, sizeof(p->name));
+
+  // 清除内核页表中对程序内存的旧映射，然后重新建立映射
+  uvmunmap(p->kernelpgtbl, 0, PGROUNDUP(oldsz)/PGSIZE, 0);
+  kvmcopymappings(pagetable, p->kernelpgtbl, 0, sz);
     
   // Commit to the user image.
   oldpagetable = p->pagetable;
