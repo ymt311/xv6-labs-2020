@@ -132,3 +132,15 @@ printfinit(void)
   initlock(&pr.lock, "pr");
   pr.locking = 1;
 }
+
+void
+backtrace()
+{
+  uint64 fp;
+  fp = r_fp(); // 获取当前函数的帧指针
+  while(fp != PGROUNDUP(fp)){  // 当 fp 没有回溯到 栈底时，执行循环
+    uint64 ra = *(uint64*)(fp - 8);  // return address
+    printf("%p\n", ra);
+    fp = *(uint64*)(fp - 16);  // previous fp
+  }
+}

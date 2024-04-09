@@ -29,7 +29,8 @@ uservec:
         csrrw a0, sscratch, a0
 
         # save the user registers in TRAPFRAME
-        sd ra, 40(a0)
+        # RISC-V 汇编指令，sd ra, 40(a0): 将寄存器 ra 的值保存到地址 (a0 + 40) 处的内存中
+        sd ra, 40(a0)  
         sd sp, 48(a0)
         sd gp, 56(a0)
         sd tp, 64(a0)
@@ -61,6 +62,7 @@ uservec:
         sd t6, 280(a0)
 
 	# save the user a0 in p->trapframe->a0
+        # 通过 csrr 指令将 sscratch 寄存器的值加载到临时寄存器 t0 中，然后将 t0 的值保存到内存地址 (a0 + 112) 处，即进程的 trapframe 结构的 a0 成员变量所在的位置
         csrr t0, sscratch
         sd t0, 112(a0)
 
@@ -74,6 +76,7 @@ uservec:
         ld t0, 16(a0)
 
         # restore kernel page table from p->trapframe->kernel_satp
+        # 从进程的 trapframe 结构中恢复内核页表，并将其加载到 satp 寄存器中
         ld t1, 0(a0)
         csrw satp, t1
         sfence.vma zero, zero

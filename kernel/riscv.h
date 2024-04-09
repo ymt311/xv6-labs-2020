@@ -319,12 +319,22 @@ sfence_vma()
   asm volatile("sfence.vma zero, zero");
 }
 
+// 该函数使用内联汇编来读取s0寄存器
+static inline uint64
+r_fp()
+{
+  uint64 x;
+  asm volatile("mv %0, s0" : "=r" (x) );
+  return x;
+}
+
+
 
 #define PGSIZE 4096 // bytes per page
 #define PGSHIFT 12  // bits of offset within a page
 
-#define PGROUNDUP(sz)  (((sz)+PGSIZE-1) & ~(PGSIZE-1))
-#define PGROUNDDOWN(a) (((a)) & ~(PGSIZE-1))
+#define PGROUNDUP(sz)  (((sz)+PGSIZE-1) & ~(PGSIZE-1))  // 将参数sz向上舍入到最接近的页面边界
+#define PGROUNDDOWN(a) (((a)) & ~(PGSIZE-1)) // 将参数a向下舍入到最接近的页面边界
 
 #define PTE_V (1L << 0) // valid
 #define PTE_R (1L << 1)

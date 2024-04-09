@@ -26,7 +26,7 @@ trapinit(void)
 void
 trapinithart(void)
 {
-  w_stvec((uint64)kernelvec);
+  w_stvec((uint64)kernelvec); // 将内核向量表的地址（由 kernelvec 指向）加载到 stvec 寄存器中
 }
 
 //
@@ -64,10 +64,11 @@ usertrap(void)
     // so don't enable until done with those registers.
     intr_on();
 
-    syscall();
-  } else if((which_dev = devintr()) != 0){
+    syscall();  // 调用 syscall() 函数执行实际的系统调用
+  } else if((which_dev = devintr()) != 0){  // 如果异常是来自设备（硬件中断），则会根据设备类型继续执行相应的操作
     // ok
   } else {
+    // 如果异常既不是系统调用也不是设备中断，则打印出异常的信息，并将进程标记为已终止状态
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
@@ -77,8 +78,20 @@ usertrap(void)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
+  // if(which_dev == 2)
+  //   yield();
+  if(which_dev == 2){
+    if(p->alarm_interval != 0){   // 如果进程设定了时钟
+      if(--p->alarm_ticks <= 0){  // 进行alarm_ticks倒数，当 alarm_ticks 倒数到小于等于 0 的时候，如果没有正在处理的时钟，则尝试触发时钟
+        if(!p->alarm_goingoff){
+          *p->alarm_trapframe = *p->trapframe;  // 备份当前的 trapframe，以便在时钟事件处理函数执行完毕后能够恢复到之前的程序状态
+          p->trapframe->epc = (uint64)p->alarm_handler;  // 将 epc 寄存器设置为时钟事件处理函数的地址，以便在中断返回时跳转到时钟事件处理函数
+          p->alarm_goingoff = 1;
+        }
+      }
+    }
     yield();
+  }
 
   usertrapret();
 }
@@ -94,7 +107,7 @@ usertrapret(void)
   // we're about to switch the destination of traps from
   // kerneltrap() to usertrap(), so turn off interrupts until
   // we're back in user space, where usertrap() is correct.
-  intr_off();
+  intr_off(); // 在内核切换回用户空间之前，需要关闭中断，以防止在切换过程中发生中断
 
   // send syscalls, interrupts, and exceptions to trampoline.S
   w_stvec(TRAMPOLINE + (uservec - trampoline));
@@ -124,6 +137,11 @@ usertrapret(void)
   // jump to trampoline.S at the top of memory, which 
   // switches to the user page table, restores user registers,
   // and switches to user mode with sret.
+  /*
+    ((void (*)(uint64,uint64))fn)：这是一个函数指针的类型转换。将 fn 强制转换为一个函数指针，该函数接受两个 uint64 类型的参数，并返回 void
+    (TRAPFRAME, satp)：这是将参数传递给跳转到的函数的方式。TRAPFRAME 和 satp 是作为参数传递给 trampoline.S 的
+    这两行代码的作用是跳转到 trampoline.S 中的一个特定位置，以执行用户模式返回（userret）的代码
+  */
   uint64 fn = TRAMPOLINE + (userret - trampoline);
   ((void (*)(uint64,uint64))fn)(TRAPFRAME, satp);
 }
@@ -140,7 +158,7 @@ kerneltrap()
   
   if((sstatus & SSTATUS_SPP) == 0)
     panic("kerneltrap: not from supervisor mode");
-  if(intr_get() != 0)
+  if(intr_get() != 0)  // 检查中断是否已经被禁用
     panic("kerneltrap: interrupts enabled");
 
   if((which_dev = devintr()) == 0){
@@ -216,5 +234,26 @@ devintr()
   } else {
     return 0;
   }
+}
+
+int
+sigalarm(int ticks, void(*handler)())
+{
+  // 设置进程中的相关属性
+  struct proc *p = myproc();
+  p->alarm_interval = ticks;
+  p->alarm_handler = handler;
+  p->alarm_ticks = ticks;
+  return 0;
+}
+
+int
+sigreturn()
+{
+  // 将 trapframe 恢复到时钟中断之前的状态，恢复原本正在执行的程序流
+  struct proc *p = myproc();
+  *p->trapframe = *p->alarm_trapframe;
+  p->alarm_goingoff = 0;
+  return 0;
 }
 
