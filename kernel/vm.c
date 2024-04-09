@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -158,7 +160,7 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
       return -1;
     if(*pte & PTE_V)
       panic("remap");
-    *pte = PA2PTE(pa) | perm | PTE_V;
+    *pte = PA2PTE(pa) | perm | PTE_V;  // 将物理地址 pa 映射到虚拟地址 a 所对应的页表项中，设置对应的权限，并标记为有效
     if(a == last)
       break;
     a += PGSIZE;
@@ -180,10 +182,12 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     panic("uvmunmap: not aligned");
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
-    if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
-    if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+    if((pte = walk(pagetable, a, 0)) == 0)  // 懒分配的页在刚分配的时候没有对应的映射，所以要把一些原本在遇到无映射地址时会 panic 的函数的行为改为直接忽略这样的地址
+      // panic("uvmunmap: walk");
+      continue;
+    if((*pte & PTE_V) == 0)   
+      // panic("uvmunmap: not mapped");
+      continue;
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
@@ -314,10 +318,12 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
+    if((pte = walk(old, i, 0)) == 0)  // 对于parent进程中尚未分配实际物理页的虚拟地址，不做处理
+      // panic("uvmcopy: pte should exist");
+      continue;
     if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+      // panic("uvmcopy: page not present");
+      continue;
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
@@ -356,6 +362,10 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
 
+  // 可能会访问到懒分配但是还没实际分配的页，所以要加一个检测，确保 copy 之前，用户态地址对应的页都有被实际分配和映射
+  if(uvmshouldtouch(dstva))
+    uvmlazytouch(dstva);
+
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
@@ -380,6 +390,10 @@ int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
   uint64 n, va0, pa0;
+
+  // 可能会访问到懒分配但是还没实际分配的页，所以要加一个检测，确保 copy 之前，用户态地址对应的页都有被实际分配和映射
+  if(uvmshouldtouch(srcva))
+    uvmlazytouch(srcva);
 
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
@@ -439,4 +453,34 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+void uvmlazytouch(uint64 va){
+  // 给虚拟地址分配物理页面
+  struct proc *p = myproc();
+  char *mem = kalloc();
+  if(mem == 0){
+    printf("lazy alloc: out of memory\n");
+    p->killed = 1;
+  }else{
+    memset(mem, 0, PGSIZE);
+    if(mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+      printf("lazy alloc: failed to map page\n");
+      kfree(mem);
+      p->killed = 1;
+    }
+  }
+}
+
+/*
+  用于检测一个虚拟地址是不是一个需要被 touch 的懒分配内存地址
+  (1) 处于 [0, p->sz)地址范围之中（进程申请的内存范围）
+  (2) 不是栈的 guard page（具体见 xv6 book，栈页的低一页故意留成不映射，作为哨兵用于捕捉 stack overflow 错误。懒分配不应该给这个地址分配物理页和建立映射，而应该直接抛出异常）
+  (3) 页表项不存在或无效
+*/
+int uvmshouldtouch(uint64 va){
+  struct proc *p = myproc();
+  pte_t *pte;
+
+  return (va < p->sz) && (PGROUNDDOWN(va) != r_sp()) && (((pte = walk(p->pagetable, va, 0))==0) || ((*pte & PTE_V)==0));
 }

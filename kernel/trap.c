@@ -67,7 +67,16 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } else if(r_scause() == 13 || r_scause() == 15){  // 发生缺页异常
+    uint64 va = r_stval();   // 获取造成页面错误的虚拟地址
+    if(uvmshouldtouch(va)){  // 检查该虚拟地址是否满足懒分配的条件
+      uvmlazytouch(va);  // 分配物理内存，并在页表创建映射
+    }else {
+      printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+      p->killed = 1;
+    }
+  }else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
