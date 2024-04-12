@@ -506,7 +506,7 @@ sched(void)
 
   if(!holding(&p->lock))
     panic("sched p->lock");
-  if(mycpu()->noff != 1)
+  if(mycpu()->noff != 1)  // 在调用 sched() 函数之前，要确保中断状态已经被禁止，并且中断禁止的嵌套深度为 1
     panic("sched locks");
   if(p->state == RUNNING)
     panic("sched running");
