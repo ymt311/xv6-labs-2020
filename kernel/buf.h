@@ -5,8 +5,8 @@ struct buf {
   uint blockno;
   struct sleeplock lock;
   uint refcnt;
-  struct buf *prev; // LRU cache list
   struct buf *next;
   uchar data[BSIZE];
+  uint lastuse;   // 用来记录buf的最后使用时间
 };
 
