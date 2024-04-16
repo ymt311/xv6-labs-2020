@@ -134,6 +134,11 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  // Clear vmas
+  for(int i=0;i<NVMA;i++) {
+    p->vmas[i].valid = 0;
+  }
+
   return p;
 }
 
@@ -146,6 +151,13 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+
+  // 释放进程时需要释放掉所有vma页
+  for(int i = 0; i < NVMA; i++) {
+    struct vma *v = &p->vmas[i];
+    vmaunmap(p->pagetable, v->vastart, v->sz, v);
+  }
+
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
@@ -295,6 +307,16 @@ fork(void)
     if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
+
+  // mmap 映射的页并不在 [0, p->sz) 范围内，所以其页表项在 fork 的时候并不会被拷贝
+  // 只拷贝了 vma 项到子进程，这样进程尝试访问 mmap 页的时候，会重新触发懒加载，重新分配物理页以及建立映射
+  for(int i = 0; i < NVMA; i++){
+    struct vma *v = &p->vmas[i];
+    if(v->valid){
+      np->vmas[i] = *v;
+      filedup(v->f);
+    }
+  }
 
   safestrcpy(np->name, p->name, sizeof(p->name));
 

@@ -62,6 +62,11 @@
 //   fixed-size stack
 //   expandable heap
 //   ...
+//   mapped files
 //   TRAPFRAME (p->trapframe, used by the trampoline)
 //   TRAMPOLINE (the same page as in the kernel)
 #define TRAPFRAME (TRAMPOLINE - PGSIZE)
+
+// 将 mmap 映射进来的文件 map 到尽可能高的位置，也就是刚好在 trapframe 下面
+// 并且若有多个 mmap 的文件，则向下生长
+#define MMAPEND TRAPFRAME  // mmap所能使用的最后一个页加1就是TRAPFRAME

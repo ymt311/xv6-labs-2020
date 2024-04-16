@@ -15,6 +15,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#include "memlayout.h"
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -482,5 +483,152 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_mmap(void)
+{
+  uint64 addr, sz, offset;
+  int prot, flags, fd; 
+  struct file *f;
+
+  // 从用户空间获取参数，并将其存储在相应的变量中
+  if(argaddr(0, &addr) < 0 || argaddr(1, &sz) < 0 || argint(2, &prot) < 0
+    || argint(3, &flags) < 0 || argfd(4, &fd, &f) < 0 || argaddr(5, &offset) < 0 || sz == 0)
+    return -1;
+
+  // 检查文件是否可以按照指定的方式进行内存映射
+  if((!f->readable && (prot & (PROT_READ)))
+     || (!f->writable && (prot & PROT_WRITE) && !(flags & MAP_PRIVATE)))
+    return -1;
+
+  sz = PGROUNDUP(sz);
+  struct proc *p = myproc();
+  struct vma *v = 0;
+  uint64 vaend = MMAPEND;  
+
+  // 在进程的 16 个 vma 槽中，找到可用的空槽
+  // 并计算所有 vma 中使用到的最低的虚拟地址（作为新 vma 的结尾地址 vaend，开区间）
+  // 然后将当前文件映射到该最低地址下面的位置（vastart = vaend - sz）
+  for(int i = 0; i < NVMA; i++){
+    struct vma *vv = &p->vmas[i];
+    if(vv->valid == 0){  // 这个vma未被使用
+      if(v == 0){
+        v = &p->vmas[i];
+        v->valid = 1;
+      }
+    }else if(vv->vastart < vaend){
+      vaend = PGROUNDDOWN(vv->vastart);
+    }
+  }
+
+  if(v == 0){
+    panic("mmap: no free vma");
+  }
+
+  v->vastart = vaend - sz;
+  v->sz = sz;
+  v->prot = prot;
+  v->flags = flags;
+  v->f = f; 
+  v->offset = offset;
+
+  filedup(v->f);  // 将文件的引用计数加1
+  return v->vastart;
+}
+
+// 查找虚拟地址va所在的虚拟内存区域
+struct vma *findvma(struct proc *p, uint64 va){
+  for(int i = 0; i < NVMA; i++){
+    struct vma *vv = &p->vmas[i];
+    if(vv->valid == 1 && va >= vv->vastart && va < vv->vastart + vv->sz){
+      return vv;
+    }
+  }
+  return 0;
+}
+
+int vmatrylazytouch(uint64 va){
+  struct proc *p = myproc();
+  struct vma *v = findvma(p, va);
+  if(v == 0){
+    return 0;
+  }
+
+  // 分配物理页
+  void *pa = kalloc();
+  if(pa == 0){
+    panic("vmalazytouch: kalloc");
+  }
+  memset(pa, 0, PGSIZE);
+
+  // 从磁盘读入数据
+  begin_op();
+  ilock(v->f->ip);
+  readi(v->f->ip, 0, (uint64)pa, v->offset + PGROUNDDOWN(va - v->vastart), PGSIZE);
+  iunlock(v->f->ip);
+  end_op();
+
+  int perm = PTE_U;
+  if(v->prot & PROT_READ)
+    perm |= PTE_R;
+  if(v->prot & PROT_WRITE)
+    perm |= PTE_W;
+  if(v->prot & PROT_EXEC)
+    perm |= PTE_X;
+
+  // 添加映射
+  if(mappages(p->pagetable, va, PGSIZE, (uint64)pa, perm) < 0){
+    panic("vmalazytouch: mappages");
+  }
+  return 1;
+}
+
+// 删除指定地址范围内的mmap映射
+uint64
+sys_munmap(void)
+{
+  uint64 addr, sz;
+
+  if(argaddr(0, &addr) < 0 || argaddr(1, &sz) < 0 || sz == 0)
+    return -1;
+
+  struct proc *p = myproc();
+
+  struct vma *v = findvma(p, addr);
+  if(v == 0) {
+    return -1;
+  }
+
+  // 试图释放一个vma区域的一部分
+  if(addr > v->vastart && addr + sz < v->vastart + v->sz) {
+    return -1;
+  }
+
+  // 计算应该开始释放的内存地址以及应该释放的内存字节数量
+  uint64 addr_aligned = addr;
+  if(addr > v->vastart) {
+    addr_aligned = PGROUNDUP(addr);
+  }
+  int nunmap = sz - (addr_aligned - addr);
+  if(nunmap < 0)
+    nunmap = 0;
+
+  vmaunmap(p->pagetable, addr_aligned, nunmap, v); 
+
+  if(addr <= v->vastart && addr + sz > v->vastart){ // unmap at the beginning
+    v->offset += addr + sz - v->vastart;
+    v->vastart = addr + sz;
+  }
+
+  v->sz -= sz;
+
+  // 在所有页释放完毕之后，关闭对文件的引用，并完全释放该 vma
+  if(v->sz <= 0){
+    fileclose(v->f);
+    v->valid = 0;
+  }
+
   return 0;
 }
